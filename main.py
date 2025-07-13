@@ -63,12 +63,21 @@ def check_bestbuy():
         logger.info("Chrome driver initialized. Loading page...")
         driver.get(URL)
         
-        # Add a small sleep to allow initial page rendering before waiting for elements
+        # Add a small sleep to allow initial page rendering before explicit waits
         logger.info("Waiting for 3 seconds for initial page render...")
         time.sleep(3) 
 
-        logger.info("Page loaded. Waiting for product items to be present and visible...")
-        # Wait for at least one price element to be visible, indicating products are loaded
+        logger.info("Page loaded. Waiting for product items to be present in DOM...")
+        # Step 1: Wait for the presence of at least one 'sku-item' element
+        # This confirms that the basic structure for product listings has loaded.
+        WebDriverWait(driver, TIMEOUT).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "sku-item"))
+        )
+        logger.info("At least one 'sku-item' element is present in the DOM.")
+
+        logger.info("Now waiting for product prices to be visible...")
+        # Step 2: Wait for the visibility of at least one 'priceView-customer-price' element
+        # This indicates that the product details, including prices, are actually rendered.
         WebDriverWait(driver, TIMEOUT).until(
             EC.visibility_of_element_located((By.CLASS_NAME, "priceView-customer-price"))
         )
