@@ -5,7 +5,7 @@ import requests
 import os
 
 URL = "https://www.bestbuy.com/site/apple-imacs-minis-mac-pros/imac/pcmcat378600050012.c?id=pcmcat378600050012&sp=Price-Low-To-High"
-ALERT_THRESHOLD = 500.00
+ALERT_THRESHOLD = 1100.00
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
 
 def send_discord_alert(matches):
