@@ -10,6 +10,7 @@ import re
 URL = "https://www.bestbuy.com/site/apple-imacs-minis-mac-pros/imac/pcmcat378600050012.c?id=pcmcat378600050012&sp=Price-Low-To-High"
 ALERT_THRESHOLD = 1200.00
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
+timeout = 25
 
 def send_discord_alert(matches):
     if not DISCORD_WEBHOOK:
@@ -38,7 +39,7 @@ def check_bestbuy():
     try:
         driver.get(URL)
         # Wait for items to load (adjust timeout as needed)
-        WebDriverWait(driver, 15).until(
+        WebDriverWait(driver, timeout).until(
             EC.presence_of_all_elements_located((By.CLASS_NAME, "sku-item"))
         )
         items = driver.find_elements(By.CLASS_NAME, "sku-item")
