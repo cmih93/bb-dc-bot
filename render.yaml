@@ -1,0 +1,7 @@
+services:
+  - type: cron
+    name: bestbuy-checker
+    schedule: "0 8,14,20 * * *"
+    runtime: python
+    buildCommand: ""
+    startCommand: python main.py
