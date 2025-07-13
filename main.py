@@ -10,7 +10,7 @@ import re
 URL = "https://www.bestbuy.com/site/apple-imacs-minis-mac-pros/imac/pcmcat378600050012.c?id=pcmcat378600050012&sp=Price-Low-To-High"
 ALERT_THRESHOLD = 1200.00
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
-TIMEOUT = 20  # Timeout for webhook requests
+TIMEOUT = 20
 
 def send_discord_alert(matches):
     if not DISCORD_WEBHOOK:
@@ -27,20 +27,6 @@ def send_discord_alert(matches):
     except requests.RequestException as e:
         print(f"❌ Failed to send Discord alert: {e}")
 
-def test_discord_webhook():
-    if not DISCORD_WEBHOOK:
-        print("❌ DISCORD_WEBHOOK environment variable not set.")
-        return
-    payload = {
-        "content": "🔔 **Test Alert**: This is a test message to verify the Discord webhook is working."
-    }
-    try:
-        resp = requests.post(DISCORD_WEBHOOK, json=payload, timeout=TIMEOUT)
-        resp.raise_for_status()
-        print("✅ Test Discord webhook sent successfully.")
-    except requests.RequestException as e:
-        print(f"❌ Failed to send test Discord webhook: {e}")
-
 def check_bestbuy():
     opts = uc.ChromeOptions()
     opts.headless = True
@@ -51,28 +37,36 @@ def check_bestbuy():
 
     matches = []
     try:
+        print("Loading page...")
         driver.get(URL)
-        WebDriverWait(driver, 10).until(
+        print("Waiting for items to load...")
+        WebDriverWait(driver, 15).until(
             EC.presence_of_all_elements_located((By.CLASS_NAME, "sku-item"))
         )
         items = driver.find_elements(By.CLASS_NAME, "sku-item")
         print(f"Found {len(items)} items.")
 
-        for item in items:
+        for i, item in enumerate(items, 1):
             try:
-                title = item.find_element(By.CLASS_NAME, "sku-header").text
+                title_elem = item.find_element(By.CLASS_NAME, "sku-header")
+                title = title_elem.text
+                print(f"Item {i}: {title}")
+
                 price_elem = item.find_element(By.CLASS_NAME, "priceView-customer-price")
                 price_text = price_elem.find_element(By.TAG_NAME, "span").text
+                print(f"Raw price text: {price_text}")
+
                 price_match = re.search(r"\d{1,3}(,\d{3})*\.\d{2}", price_text)
                 if price_match:
                     price = float(price_match.group().replace(",", ""))
+                    print(f"Parsed price: ${price:.2f}")
                     if price < ALERT_THRESHOLD:
                         matches.append(f"**{title}**\n💵 ${price:.2f}")
                         print(f"Match found: {title} - ${price:.2f}")
                 else:
                     print(f"Could not parse price for {title}: {price_text}")
             except Exception as e:
-                print(f"Error processing item: {e}")
+                print(f"Error processing item {i}: {e}")
                 continue
     except Exception as e:
         print(f"Error loading page or finding items: {e}")
@@ -85,7 +79,4 @@ def check_bestbuy():
         print(f"❌ No iMacs under ${ALERT_THRESHOLD} found.")
 
 if __name__ == "__main__":
-    # Run the test webhook
-    test_discord_webhook()
-    # Optionally run the BestBuy check
-    # check_bestbuy()
+    check_bestbuy()
