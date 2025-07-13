@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 URL = "https://www.bestbuy.com/site/apple-imacs-minis-mac-pros/imac/pcmcat378600050012.c?id=pcmcat378600050012&sp=Price-Low-To-High"
 ALERT_THRESHOLD = 1200.00
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
-TIMEOUT = 20
+TIMEOUT = 30 # Increased timeout for more robust page loading
 
 def send_discord_alert(matches):
     """Sends a Discord alert with the found iMac deals."""
@@ -62,17 +62,19 @@ def check_bestbuy():
         driver = uc.Chrome(options=opts)
         logger.info("Chrome driver initialized. Loading page...")
         driver.get(URL)
-        logger.info("Page loaded. Waiting for product items to be present...")
+        
+        # Add a small sleep to allow initial page rendering before waiting for elements
+        logger.info("Waiting for 3 seconds for initial page render...")
+        time.sleep(3) 
 
-        # Wait for the main product list to load.
-        # Use a robust wait condition for elements that contain product information.
+        logger.info("Page loaded. Waiting for product items to be present and visible...")
+        # Wait for at least one price element to be visible, indicating products are loaded
         WebDriverWait(driver, TIMEOUT).until(
-            EC.presence_of_all_elements_located((By.CLASS_NAME, "sku-item"))
+            EC.visibility_of_element_located((By.CLASS_NAME, "priceView-customer-price"))
         )
-        logger.info("Product items found on the page.")
+        logger.info("At least one price element is visible. Proceeding to find all items.")
 
         # Save page source for debugging purposes if needed
-        # This can help verify the HTML structure that the scraper is seeing
         with open("page_source_after_load.html", "w", encoding="utf-8") as f:
             f.write(driver.page_source)
         logger.info("Page source saved to page_source_after_load.html for debugging.")
@@ -80,7 +82,7 @@ def check_bestbuy():
         # Find all product items using the common 'sku-item' class
         items = driver.find_elements(By.CLASS_NAME, "sku-item")
         if not items:
-            logger.warning("No 'sku-item' elements found on the page. Check selector or page structure.")
+            logger.warning("No 'sku-item' elements found on the page after waiting. Check selector or page structure.")
             return # Exit if no items are found
 
         logger.info(f"Processing {len(items)} product items.")
@@ -88,52 +90,42 @@ def check_bestbuy():
         for i, item in enumerate(items, 1):
             try:
                 # Extract product title
-                # Look for 'sku-header' within the item, which usually contains the title link.
                 title_elem = item.find_element(By.CLASS_NAME, "sku-header")
-                title = title_elem.text.strip() # .strip() to remove leading/trailing whitespace
+                title = title_elem.text.strip()
                 logger.info(f"Item {i} - Title: '{title}'")
 
                 # Extract product price
-                # Best Buy prices are typically within 'priceView-customer-price'
                 price_container = item.find_element(By.CLASS_NAME, "priceView-customer-price")
                 
-                # Try to get the price text from the direct container or a nested span
                 price_text = ""
                 try:
-                    # Often the actual price number is in a span directly inside or a sibling
-                    # Let's try to get all text content from the price_container
+                    # Try to get the price text from the direct container or a nested span
                     price_text = price_container.text.strip()
-                    if not price_text: # If direct text is empty, try a span inside
+                    if not price_text:
                         price_span = price_container.find_element(By.TAG_NAME, "span")
                         price_text = price_span.text.strip()
                 except Exception as nested_e:
                     logger.warning(f"Could not find direct text or span within price container for item {i}. Error: {nested_e}")
-                    # Fallback to getting text from the parent price_container if nested fails
                     price_text = price_container.text.strip()
 
                 logger.info(f"Item {i} - Raw price text: '{price_text}'")
 
                 # Use a more flexible regex to parse the price
-                # This regex handles prices with or without commas, and optional decimal places.
-                # Example: $1,199.99, $999, $123.45
                 price_match = re.search(r'\$?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', price_text)
                 
                 if price_match:
-                    # Extract the matched price string (e.g., "1,199.99" or "999")
                     price_str = price_match.group(1).replace(",", "")
                     price = float(price_str)
                     logger.info(f"Item {i} - Parsed price: ${price:.2f}")
 
                     if price < ALERT_THRESHOLD:
-                        # Construct the match string for Discord
-                        matches.append(f"**{title}**\n💵 ${price:.2f}\n[View Product]({URL})") # Added URL for direct link
+                        matches.append(f"**{title}**\n💵 ${price:.2f}\n[View Product]({URL})")
                         logger.info(f"Match found: {title} - ${price:.2f} (Below threshold)")
                 else:
                     logger.warning(f"Item {i} - Could not parse numerical price from text: '{price_text}'")
 
             except Exception as e:
                 logger.error(f"Error processing item {i} (Title: '{title if 'title' in locals() else 'N/A'}'): {e}")
-                # Continue to the next item even if one fails
                 continue
     except Exception as e:
         logger.error(f"An unexpected error occurred during scraping: {e}")
