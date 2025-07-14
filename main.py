@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 URL = "https://www.bestbuy.com/site/apple-imacs-minis-mac-pros/imac/pcmcat378600050012.c?id=pcmcat378600050012&sp=Price-Low-To-High"
 ALERT_THRESHOLD = 1200.00
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
-TIMEOUT = 30 # Increased timeout for more robust page loading
+TIMEOUT = 60 # Increased timeout significantly for very slow loading pages
+SCROLL_PAUSE_TIME = 3 # Time to wait after each scroll to allow content to load
 
 def send_discord_alert(matches):
     """Sends a Discord alert with the found iMac deals."""
@@ -39,6 +40,25 @@ def send_discord_alert(matches):
         logger.info("Discord alert sent successfully.")
     except requests.RequestException as e:
         logger.error(f"Failed to send Discord alert: {e}")
+
+def scroll_to_end(driver):
+    """Scrolls to the end of the page to load all dynamic content."""
+    logger.info("Starting to scroll to the end of the page to load all content...")
+    last_height = driver.execute_script("return document.body.scrollHeight")
+    scroll_attempts = 0
+    max_scroll_attempts = 10 # Increased limit to allow for more scrolling on very long pages
+
+    while True and scroll_attempts < max_scroll_attempts:
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(SCROLL_PAUSE_TIME) # Wait for new content to load
+        new_height = driver.execute_script("return document.body.scrollHeight")
+        if new_height == last_height:
+            logger.info(f"Reached end of scrollable page after {scroll_attempts + 1} attempts.")
+            break
+        last_height = new_height
+        scroll_attempts += 1
+        logger.info(f"Scrolled down. New height: {new_height}. Attempt: {scroll_attempts}")
+    logger.info("Finished scrolling.")
 
 def check_bestbuy():
     """
@@ -63,35 +83,34 @@ def check_bestbuy():
         logger.info("Chrome driver initialized. Loading page...")
         driver.get(URL)
         
-        # Add a small sleep to allow initial page rendering before explicit waits
-        logger.info("Waiting for 3 seconds for initial page render...")
-        time.sleep(3) 
+        # Give the page more initial time to render before attempting to scroll
+        logger.info("Waiting for 10 seconds for initial page render before scrolling...")
+        time.sleep(10) 
 
-        logger.info("Page loaded. Waiting for product items to be present in DOM...")
-        # Step 1: Wait for the presence of at least one 'sku-item' element
-        # This confirms that the basic structure for product listings has loaded.
-        WebDriverWait(driver, TIMEOUT).until(
-            EC.presence_of_element_located((By.CLASS_NAME, "sku-item"))
-        )
-        logger.info("At least one 'sku-item' element is present in the DOM.")
+        # Scroll to the end of the page to ensure all dynamic content is loaded
+        scroll_to_end(driver)
 
-        logger.info("Now waiting for product prices to be visible...")
-        # Step 2: Wait for the visibility of at least one 'priceView-customer-price' element
-        # This indicates that the product details, including prices, are actually rendered.
-        WebDriverWait(driver, TIMEOUT).until(
-            EC.visibility_of_element_located((By.CLASS_NAME, "priceView-customer-price"))
-        )
-        logger.info("At least one price element is visible. Proceeding to find all items.")
+        logger.info("Page loaded and scrolled. Attempting to find product items.")
 
         # Save page source for debugging purposes if needed
-        with open("page_source_after_load.html", "w", encoding="utf-8") as f:
+        with open("page_source_after_scroll.html", "w", encoding="utf-8") as f:
             f.write(driver.page_source)
-        logger.info("Page source saved to page_source_after_load.html for debugging.")
+        logger.info("Page source saved to page_source_after_scroll.html for debugging.")
 
         # Find all product items using the common 'sku-item' class
-        items = driver.find_elements(By.CLASS_NAME, "sku-item")
+        # Use a WebDriverWait here for the presence of ALL elements after scrolling
+        try:
+            WebDriverWait(driver, TIMEOUT).until(
+                EC.presence_of_all_elements_located((By.CLASS_NAME, "sku-item"))
+            )
+            items = driver.find_elements(By.CLASS_NAME, "sku-item")
+            logger.info(f"Found {len(items)} 'sku-item' elements after scrolling.")
+        except Exception as e:
+            logger.error(f"Failed to find 'sku-item' elements after scrolling within timeout ({TIMEOUT}s): {e}")
+            return # Exit if no items are found even after scrolling
+
         if not items:
-            logger.warning("No 'sku-item' elements found on the page after waiting. Check selector or page structure.")
+            logger.warning("No 'sku-item' elements found on the page after all attempts. Check selector or page structure.")
             return # Exit if no items are found
 
         logger.info(f"Processing {len(items)} product items.")
