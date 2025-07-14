@@ -81,11 +81,15 @@ def check_bestbuy():
         logger.info("Initializing Chrome driver...")
         driver = uc.Chrome(options=opts)
         logger.info("Chrome driver initialized. Loading page...")
-        driver.get(URL)
         
-        # Give the page more initial time to render before attempting to scroll
-        logger.info("Waiting for 10 seconds for initial page render before scrolling...")
-        time.sleep(10) 
+        try:
+            driver.get(URL)
+            # Give the page more initial time to render before attempting to scroll
+            logger.info("Waiting for 10 seconds for initial page render before scrolling...")
+            time.sleep(10) 
+        except Exception as e:
+            logger.error(f"Failed to load URL or initial page render: {e}")
+            return # Exit if initial page load fails
 
         # Scroll to the end of the page to ensure all dynamic content is loaded
         scroll_to_end(driver)
@@ -98,15 +102,18 @@ def check_bestbuy():
         logger.info("Page source saved to page_source_after_scroll.html for debugging.")
 
         # Find all product items using the common 'sku-item' class
-        # Use a WebDriverWait here for the presence of ALL elements after scrolling
         try:
+            # Wait for the presence of at least one sku-item to confirm the structure is there
             WebDriverWait(driver, TIMEOUT).until(
-                EC.presence_of_all_elements_located((By.CLASS_NAME, "sku-item"))
+                EC.presence_of_element_located((By.CLASS_NAME, "sku-item"))
             )
+            logger.info("At least one 'sku-item' element found in the DOM. Now collecting all.")
+            
+            # Find all sku-item elements that are currently present
             items = driver.find_elements(By.CLASS_NAME, "sku-item")
-            logger.info(f"Found {len(items)} 'sku-item' elements after scrolling.")
+            logger.info(f"Found {len(items)} 'sku-item' elements after scrolling and initial wait.")
         except Exception as e:
-            logger.error(f"Failed to find 'sku-item' elements after scrolling within timeout ({TIMEOUT}s): {e}")
+            logger.error(f"Failed to find any 'sku-item' elements after scrolling within timeout ({TIMEOUT}s): {e}")
             return # Exit if no items are found even after scrolling
 
         if not items:
