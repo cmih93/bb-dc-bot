@@ -97,45 +97,73 @@ def check_bestbuy():
         logger.info(f"Processing {len(items)} product items.")
 
         for i, item in enumerate(items, 1):
+            title = "N/A" # Initialize title for logging in case of early error
+            price = None # Initialize price to None
+
             try:
                 # Extract product title
                 title_elem = item.find_element(By.CLASS_NAME, "sku-header")
                 title = title_elem.text.strip()
                 logger.info(f"Item {i} - Title: '{title}'")
 
-                # Extract product price
-                price_container = item.find_element(By.CLASS_NAME, "priceView-customer-price")
-                
-                price_text = ""
+                # --- Attempt to extract regular price ---
                 try:
-                    # Try to get the price text from the direct container or a nested span
-                    price_text = price_container.text.strip()
-                    if not price_text:
-                        price_span = price_container.find_element(By.TAG_NAME, "span")
-                        price_text = price_span.text.strip()
-                except Exception as nested_e:
-                    logger.warning(f"Could not find direct text or span within price container for item {i}. Error: {nested_e}")
-                    price_text = price_container.text.strip()
+                    price_container = item.find_element(By.CLASS_NAME, "priceView-customer-price")
+                    price_text = ""
+                    try:
+                        price_text = price_container.text.strip()
+                        if not price_text:
+                            price_span = price_container.find_element(By.TAG_NAME, "span")
+                            price_text = price_span.text.strip()
+                    except Exception as nested_e:
+                        logger.debug(f"Could not find direct text or span within price container for regular price. Error: {nested_e}")
+                        price_text = price_container.text.strip() # Fallback to parent text
 
-                logger.info(f"Item {i} - Raw price text: '{price_text}'")
+                    logger.info(f"Item {i} - Raw regular price text: '{price_text}'")
+                    price_match = re.search(r'\$?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', price_text)
+                    if price_match:
+                        price_str = price_match.group(1).replace(",", "")
+                        price = float(price_str)
+                        logger.info(f"Item {i} - Parsed regular price: ${price:.2f}")
+                    else:
+                        logger.debug(f"Could not parse numerical regular price from text: '{price_text}'")
 
-                # Use a more flexible regex to parse the price
-                price_match = re.search(r'\$?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', price_text)
-                
-                if price_match:
-                    price_str = price_match.group(1).replace(",", "")
-                    price = float(price_str)
-                    logger.info(f"Item {i} - Parsed price: ${price:.2f}")
+                except Exception as e:
+                    logger.debug(f"Regular price element (priceView-customer-price) not found for item {i}. Trying open-box price. Error: {e}")
 
+                # --- If regular price not found or parsed, attempt to extract open-box price ---
+                if price is None:
+                    try:
+                        # Look for the 'Open Box' link which contains the price
+                        open_box_link = item.find_element(By.XPATH, ".//a[contains(@class, 'buying-option-link') and contains(text(), 'from $')]")
+                        open_box_text = open_box_link.text.strip()
+                        logger.info(f"Item {i} - Raw open-box price text: '{open_box_text}'")
+                        
+                        # Regex to extract price from "from $XXX.XX"
+                        open_box_price_match = re.search(r'from \$?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', open_box_text)
+                        if open_box_price_match:
+                            price_str = open_box_price_match.group(1).replace(",", "")
+                            price = float(price_str)
+                            logger.info(f"Item {i} - Parsed open-box price: ${price:.2f}")
+                        else:
+                            logger.warning(f"Item {i} - Could not parse numerical open-box price from text: '{open_box_text}'")
+
+                    except Exception as e:
+                        logger.debug(f"Open-box price link not found for item {i}. Error: {e}")
+                        logger.warning(f"Item {i} - No price (regular or open-box) could be found or parsed.")
+                        continue # Skip this item if no price is found
+
+                # --- Check if a valid price was found and if it's below the threshold ---
+                if price is not None:
                     if price < ALERT_THRESHOLD:
                         matches.append(f"**{title}**\n💵 ${price:.2f}\n[View Product]({URL})")
                         logger.info(f"Match found: {title} - ${price:.2f} (Below threshold)")
                 else:
-                    logger.warning(f"Item {i} - Could not parse numerical price from text: '{price_text}'")
+                    logger.warning(f"Item {i} - Final price for '{title}' is None after all attempts. Skipping.")
 
             except Exception as e:
-                logger.error(f"Error processing item {i} (Title: '{title if 'title' in locals() else 'N/A'}'): {e}")
-                continue
+                logger.error(f"Error processing item {i} (Title: '{title}'): {e}")
+                continue # Continue to the next item even if one fails
     except Exception as e:
         logger.error(f"An unexpected error occurred during scraping: {e}")
     finally:
