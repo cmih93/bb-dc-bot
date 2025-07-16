@@ -190,7 +190,7 @@ def get_product_info(item):
                 elem_text = elem.text.strip()
                 
                 # Check if this element contains price info
-                if any(keyword in elem_text.lower() for keyword in ['current price', 'price', '
+                if any(keyword in elem_text.lower() for keyword in ['current price', 'price']
 
 def check_bestbuy():
     """Main function to check Best Buy for iMac deals."""
