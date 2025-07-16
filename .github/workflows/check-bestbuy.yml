@@ -2,9 +2,8 @@ name: Check Best Buy for Open-Box iMacs
 
 on:
   schedule:
-    - cron: '0 12 * * *'  # 8 AM ET
-    - cron: '0 18 * * *'  # 2 PM ET
-    - cron: '0 0 * * *'   # 8 PM ET
+    # Run every hour from 7 AM to 9 PM ET (11 UTC to 1 UTC next day)
+    - cron: '0 11-23,0-1 * * *'
   workflow_dispatch:      # Allow manual run
 
 jobs:
@@ -13,16 +12,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-
       - name: Run Best Buy Checker
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
