@@ -20,190 +20,206 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 URL = "https://www.bestbuy.com/site/apple-imacs-minis-mac-pros/imac/pcmcat378600050012.c?id=pcmcat378600050012&sp=Price-Low-To-High"
-ALERT_THRESHOLD = 1200.00
+ALERT_THRESHOLD = 1100.00  # Set to 1100 for testing
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
-TIMEOUT = 60 # Increased timeout significantly for very slow loading pages
-SCROLL_PAUSE_TIME = 3 # Time to wait after each scroll to allow content to load
 
 def send_discord_alert(matches):
     """Sends a Discord alert with the found iMac deals."""
     if not DISCORD_WEBHOOK:
         logger.error("DISCORD_WEBHOOK environment variable not set. Cannot send alert.")
         return
+    
     content = "\n\n".join(matches)
     payload = {
         "content": f"🔥 **iMacs Under ${ALERT_THRESHOLD:.2f} Found!**\n\n{content}\n\nCheck them out: {URL}"
     }
+    
     try:
-        resp = requests.post(DISCORD_WEBHOOK, json=payload, timeout=TIMEOUT)
-        resp.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
+        resp = requests.post(DISCORD_WEBHOOK, json=payload, timeout=30)
+        resp.raise_for_status()
         logger.info("Discord alert sent successfully.")
     except requests.RequestException as e:
         logger.error(f"Failed to send Discord alert: {e}")
 
-def scroll_to_end(driver):
-    """Scrolls to the end of the page to load all dynamic content."""
-    logger.info("Starting to scroll to the end of the page to load all content...")
-    last_height = driver.execute_script("return document.body.scrollHeight")
-    scroll_attempts = 0
-    max_scroll_attempts = 10 # Increased limit to allow for more scrolling on very long pages
+def setup_driver():
+    """Sets up and returns a Chrome driver with anti-detection options."""
+    opts = uc.ChromeOptions()
+    opts.headless = True
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    
+    return uc.Chrome(options=opts)
 
-    while True and scroll_attempts < max_scroll_attempts:
+def load_page_with_scroll(driver, url):
+    """Loads the page and scrolls to ensure all content is loaded."""
+    logger.info("Loading page...")
+    driver.get(url)
+    
+    # Wait for initial load
+    time.sleep(10)
+    logger.info("Initial page load complete, starting scroll...")
+    
+    # Scroll down in chunks to load dynamic content
+    last_height = driver.execute_script("return document.body.scrollHeight")
+    
+    for i in range(5):  # Scroll 5 times maximum
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(SCROLL_PAUSE_TIME) # Wait for new content to load
+        time.sleep(3)
+        
         new_height = driver.execute_script("return document.body.scrollHeight")
         if new_height == last_height:
-            logger.info(f"Reached end of scrollable page after {scroll_attempts + 1} attempts.")
+            logger.info(f"Page fully loaded after {i+1} scrolls")
             break
         last_height = new_height
-        scroll_attempts += 1
-        logger.info(f"Scrolled down. New height: {new_height}. Attempt: {scroll_attempts}")
-    logger.info("Finished scrolling.")
+    
+    # Scroll back to top to ensure all elements are in view
+    driver.execute_script("window.scrollTo(0, 0);")
+    time.sleep(2)
+
+def extract_price(price_text):
+    """Extracts numeric price from text."""
+    if not price_text:
+        return None
+    
+    # Look for price patterns like $1,299.99 or 1299.99
+    price_match = re.search(r'\$?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', price_text)
+    if price_match:
+        price_str = price_match.group(1).replace(",", "")
+        try:
+            return float(price_str)
+        except ValueError:
+            return None
+    return None
+
+def get_product_info(item):
+    """Extracts title and price from a product item."""
+    title = "Unknown Product"
+    price = None
+    
+    try:
+        # Get product title
+        title_elem = item.find_element(By.CSS_SELECTOR, "h4.sku-header a, .sku-title")
+        title = title_elem.text.strip()
+    except:
+        try:
+            # Alternative title selector
+            title_elem = item.find_element(By.CSS_SELECTOR, "[data-testid='product-title']")
+            title = title_elem.text.strip()
+        except:
+            logger.debug("Could not find product title")
+    
+    # Try multiple price selectors
+    price_selectors = [
+        ".sr-only:contains('current price')",
+        ".priceView-customer-price span",
+        ".pricing-price__value",
+        "[data-testid='customer-price']",
+        ".visually-hidden:contains('current price')"
+    ]
+    
+    for selector in price_selectors:
+        try:
+            if ":contains(" in selector:
+                # Handle contains selector differently
+                price_elements = item.find_elements(By.CSS_SELECTOR, selector.split(":contains(")[0])
+                for elem in price_elements:
+                    if "current price" in elem.text.lower():
+                        price = extract_price(elem.text)
+                        if price:
+                            break
+            else:
+                price_elem = item.find_element(By.CSS_SELECTOR, selector)
+                price = extract_price(price_elem.text)
+            
+            if price:
+                break
+        except:
+            continue
+    
+    # Try to find open-box pricing if regular price not found
+    if not price:
+        try:
+            open_box_elem = item.find_element(By.CSS_SELECTOR, "a[href*='open-box']")
+            open_box_text = open_box_elem.text
+            price_match = re.search(r'from \$?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', open_box_text)
+            if price_match:
+                price = float(price_match.group(1).replace(",", ""))
+        except:
+            pass
+    
+    return title, price
 
 def check_bestbuy():
-    """
-    Initializes a Chrome driver, navigates to the Best Buy iMac page,
-    scrapes product titles and prices, and sends a Discord alert for
-    iMacs found below the ALERT_THRESHOLD.
-    """
-    opts = uc.ChromeOptions()
-    opts.headless = True # Run Chrome in headless mode (without a UI)
-    opts.add_argument("--no-sandbox") # Required for running in some environments
-    opts.add_argument("--disable-dev-shm-usage") # Overcomes limited resource problems
-    opts.add_argument("--disable-gpu") # Helpful for headless in CI/some environments
-    # Use a common user-agent to mimic a regular browser
-    opts.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36")
-    
-    driver = None # Initialize driver to None for proper cleanup in finally block
+    """Main function to check Best Buy for iMac deals."""
+    driver = None
     matches = []
-
+    
     try:
-        logger.info("Initializing Chrome driver...")
-        driver = uc.Chrome(options=opts)
-        logger.info("Chrome driver initialized. Loading page...")
+        driver = setup_driver()
+        load_page_with_scroll(driver, URL)
         
+        # Wait for products to load
         try:
-            driver.get(URL)
-            # Give the page more initial time to render before attempting to scroll
-            logger.info("Waiting for 10 seconds for initial page render before scrolling...")
-            time.sleep(10) 
-        except Exception as e:
-            logger.error(f"Failed to load URL or initial page render: {e}")
-            return # Exit if initial page load fails
-
-        # Scroll to the end of the page to ensure all dynamic content is loaded
-        scroll_to_end(driver)
-
-        logger.info("Page loaded and scrolled. Attempting to find product items.")
-
-        # Save page source for debugging purposes if needed
-        with open("page_source_after_scroll.html", "w", encoding="utf-8") as f:
-            f.write(driver.page_source)
-        logger.info("Page source saved to page_source_after_scroll.html for debugging.")
-
-        # Find all product items using the common 'sku-item' class
-        try:
-            # Wait for the presence of at least one sku-item to confirm the structure is there
-            WebDriverWait(driver, TIMEOUT).until(
-                EC.presence_of_element_located((By.CLASS_NAME, "sku-item"))
+            WebDriverWait(driver, 30).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".sku-item, [data-testid='product-card']"))
             )
-            logger.info("At least one 'sku-item' element found in the DOM. Now collecting all.")
-            
-            # Find all sku-item elements that are currently present
-            items = driver.find_elements(By.CLASS_NAME, "sku-item")
-            logger.info(f"Found {len(items)} 'sku-item' elements after scrolling and initial wait.")
-        except Exception as e:
-            logger.error(f"Failed to find any 'sku-item' elements after scrolling within timeout ({TIMEOUT}s): {e}")
-            return # Exit if no items are found even after scrolling
-
-        if not items:
-            logger.warning("No 'sku-item' elements found on the page after all attempts. Check selector or page structure.")
-            return # Exit if no items are found
-
-        logger.info(f"Processing {len(items)} product items.")
-
-        for i, item in enumerate(items, 1):
-            title = "N/A" # Initialize title for logging in case of early error
-            price = None # Initialize price to None
-
+        except:
+            logger.error("No products found on page")
+            return
+        
+        # Find all product items
+        product_selectors = [".sku-item", "[data-testid='product-card']", ".list-item"]
+        items = []
+        
+        for selector in product_selectors:
             try:
-                # Extract product title
-                title_elem = item.find_element(By.CLASS_NAME, "sku-header")
-                title = title_elem.text.strip()
-                logger.info(f"Item {i} - Title: '{title}'")
-
-                # --- Attempt to extract regular price ---
-                try:
-                    price_container = item.find_element(By.CLASS_NAME, "priceView-customer-price")
-                    price_text = ""
-                    try:
-                        price_text = price_container.text.strip()
-                        if not price_text:
-                            price_span = price_container.find_element(By.TAG_NAME, "span")
-                            price_text = price_span.text.strip()
-                    except Exception as nested_e:
-                        logger.debug(f"Could not find direct text or span within price container for regular price. Error: {nested_e}")
-                        price_text = price_container.text.strip() # Fallback to parent text
-
-                    logger.info(f"Item {i} - Raw regular price text: '{price_text}'")
-                    price_match = re.search(r'\$?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', price_text)
-                    if price_match:
-                        price_str = price_match.group(1).replace(",", "")
-                        price = float(price_str)
-                        logger.info(f"Item {i} - Parsed regular price: ${price:.2f}")
+                items = driver.find_elements(By.CSS_SELECTOR, selector)
+                if items:
+                    logger.info(f"Found {len(items)} products using selector: {selector}")
+                    break
+            except:
+                continue
+        
+        if not items:
+            logger.error("No product items found with any selector")
+            return
+        
+        logger.info(f"Processing {len(items)} products...")
+        
+        for i, item in enumerate(items, 1):
+            try:
+                title, price = get_product_info(item)
+                
+                if price and price < ALERT_THRESHOLD:
+                    # Check if it's actually an iMac
+                    if any(keyword in title.lower() for keyword in ['imac', 'mac']):
+                        matches.append(f"**{title}**\n💵 ${price:.2f}")
+                        logger.info(f"Match found: {title} - ${price:.2f}")
                     else:
-                        logger.debug(f"Could not parse numerical regular price from text: '{price_text}'")
-
-                except Exception as e:
-                    logger.debug(f"Regular price element (priceView-customer-price) not found for item {i}. Trying open-box price. Error: {e}")
-
-                # --- If regular price not found or parsed, attempt to extract open-box price ---
-                if price is None:
-                    try:
-                        # Look for the 'Open Box' link which contains the price
-                        open_box_link = item.find_element(By.XPATH, ".//a[contains(@class, 'buying-option-link') and contains(text(), 'from $')]")
-                        open_box_text = open_box_link.text.strip()
-                        logger.info(f"Item {i} - Raw open-box price text: '{open_box_text}'")
-                        
-                        # Regex to extract price from "from $XXX.XX"
-                        open_box_price_match = re.search(r'from \$?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', open_box_text)
-                        if open_box_price_match:
-                            price_str = open_box_price_match.group(1).replace(",", "")
-                            price = float(price_str)
-                            logger.info(f"Item {i} - Parsed open-box price: ${price:.2f}")
-                        else:
-                            logger.warning(f"Item {i} - Could not parse numerical open-box price from text: '{open_box_text}'")
-
-                    except Exception as e:
-                        logger.debug(f"Open-box price link not found for item {i}. Error: {e}")
-                        logger.warning(f"Item {i} - No price (regular or open-box) could be found or parsed.")
-                        continue # Skip this item if no price is found
-
-                # --- Check if a valid price was found and if it's below the threshold ---
-                if price is not None:
-                    if price < ALERT_THRESHOLD:
-                        matches.append(f"**{title}**\n💵 ${price:.2f}\n[View Product]({URL})")
-                        logger.info(f"Match found: {title} - ${price:.2f} (Below threshold)")
+                        logger.debug(f"Product under threshold but not an iMac: {title}")
+                elif price:
+                    logger.debug(f"Product above threshold: {title} - ${price:.2f}")
                 else:
-                    logger.warning(f"Item {i} - Final price for '{title}' is None after all attempts. Skipping.")
-
+                    logger.debug(f"No price found for: {title}")
+                    
             except Exception as e:
-                logger.error(f"Error processing item {i} (Title: '{title}'): {e}")
-                continue # Continue to the next item even if one fails
+                logger.error(f"Error processing item {i}: {e}")
+                continue
+        
+        if matches:
+            logger.info(f"Found {len(matches)} iMac(s) under ${ALERT_THRESHOLD:.2f}")
+            send_discord_alert(matches)
+        else:
+            logger.info(f"No iMacs found under ${ALERT_THRESHOLD:.2f}")
+            
     except Exception as e:
-        logger.error(f"An unexpected error occurred during scraping: {e}")
+        logger.error(f"Unexpected error: {e}")
     finally:
         if driver:
-            logger.info("Closing Chrome driver.")
             driver.quit()
-        else:
-            logger.warning("Driver was not initialized, nothing to quit.")
-
-    if matches:
-        logger.info(f"Found {len(matches)} iMac(s) under ${ALERT_THRESHOLD:.2f}. Sending Discord alert.")
-        send_discord_alert(matches)
-    else:
-        logger.info(f"No iMacs found under ${ALERT_THRESHOLD:.2f}.")
 
 if __name__ == "__main__":
     check_bestbuy()
