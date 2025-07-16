@@ -49,7 +49,19 @@ def setup_driver():
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
     opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_argument("--disable-extensions")
+    opts.add_argument("--disable-plugins")
+    opts.add_argument("--disable-images")  # Faster loading
+    opts.add_argument("--disable-javascript")  # Try without JS first
+    opts.add_argument("--window-size=1920,1080")
     opts.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    
+    # Add prefs to disable images and CSS for faster loading
+    prefs = {
+        "profile.managed_default_content_settings.images": 2,
+        "profile.default_content_setting_values.notifications": 2
+    }
+    opts.add_experimental_option("prefs", prefs)
     
     return uc.Chrome(options=opts)
 
@@ -58,16 +70,26 @@ def load_page_with_scroll(driver, url):
     logger.info("Loading page...")
     driver.get(url)
     
-    # Wait for initial load
-    time.sleep(10)
+    # Wait for initial load and check for anti-bot measures
+    time.sleep(15)  # Increased wait time
     logger.info("Initial page load complete, starting scroll...")
+    
+    # Check if we're being blocked
+    page_title = driver.title.lower()
+    if "blocked" in page_title or "access denied" in page_title or "robot" in page_title:
+        logger.warning(f"Possible blocking detected. Page title: {page_title}")
+    
+    # Save page source for debugging
+    with open("page_debug.html", "w", encoding="utf-8") as f:
+        f.write(driver.page_source)
+    logger.info("Page source saved to page_debug.html for debugging")
     
     # Scroll down in chunks to load dynamic content
     last_height = driver.execute_script("return document.body.scrollHeight")
     
-    for i in range(5):  # Scroll 5 times maximum
+    for i in range(8):  # Increased scroll attempts
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(3)
+        time.sleep(4)  # Longer wait between scrolls
         
         new_height = driver.execute_script("return document.body.scrollHeight")
         if new_height == last_height:
@@ -77,7 +99,7 @@ def load_page_with_scroll(driver, url):
     
     # Scroll back to top to ensure all elements are in view
     driver.execute_script("window.scrollTo(0, 0);")
-    time.sleep(2)
+    time.sleep(3)
 
 def extract_price(price_text):
     """Extracts numeric price from text."""
@@ -161,17 +183,61 @@ def check_bestbuy():
         driver = setup_driver()
         load_page_with_scroll(driver, URL)
         
-        # Wait for products to load
-        try:
-            WebDriverWait(driver, 30).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".sku-item, [data-testid='product-card']"))
-            )
-        except:
-            logger.error("No products found on page")
+        # Wait for products to load - try multiple approaches
+        selectors_to_try = [
+            ".sku-item",
+            "[data-testid='product-card']", 
+            ".list-item",
+            ".product-item",
+            ".sr-product-item",
+            ".product",
+            "[class*='product']",
+            "[class*='sku']"
+        ]
+        
+        products_found = False
+        for selector in selectors_to_try:
+            try:
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                )
+                products_found = True
+                logger.info(f"Products found with selector: {selector}")
+                break
+            except:
+                logger.debug(f"No products found with selector: {selector}")
+                continue
+        
+        if not products_found:
+            logger.error("No products found with any selector")
+            logger.info("Checking page content...")
+            
+            # Check what's actually on the page
+            page_text = driver.page_source.lower()
+            if "imac" in page_text:
+                logger.info("iMac text found on page - selector issue")
+            if "price" in page_text:
+                logger.info("Price text found on page")
+            if "out of stock" in page_text:
+                logger.info("Out of stock text found")
+            if "no results" in page_text:
+                logger.info("No results text found")
+            
             return
         
-        # Find all product items
-        product_selectors = [".sku-item", "[data-testid='product-card']", ".list-item"]
+        # Find all product items with expanded selectors
+        product_selectors = [
+            ".sku-item", 
+            "[data-testid='product-card']", 
+            ".list-item",
+            ".product-item",
+            ".sr-product-item", 
+            ".product",
+            "[class*='product']",
+            "[class*='sku']",
+            "article",
+            "[role='article']"
+        ]
         items = []
         
         for selector in product_selectors:
