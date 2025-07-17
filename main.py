@@ -116,49 +116,78 @@ def extract_price(price_text):
             return None
     return None
 
-def get_product_info(item):
+def get_product_info(item, debug_index=None):
     """Extracts title and price from a product item."""
     title = "Unknown Product"
     price = None
     
-    try:
-        # Get product title
-        title_elem = item.find_element(By.CSS_SELECTOR, "h4.sku-header a, .sku-title")
-        title = title_elem.text.strip()
-    except:
-        try:
-            # Alternative title selector
-            title_elem = item.find_element(By.CSS_SELECTOR, "[data-testid='product-title']")
-            title = title_elem.text.strip()
-        except:
-            logger.debug("Could not find product title")
+    # Enhanced debugging
+    if debug_index is not None:
+        logger.debug(f"Processing product {debug_index}")
     
-    # Try multiple price selectors
+    try:
+        # Get product title - try multiple selectors
+        title_selectors = [
+            "h4.sku-header a", 
+            ".sku-title",
+            "[data-testid='product-title']",
+            "h4 a",
+            ".sr-only",
+            "a[href*='/site/']",
+            ".product-title",
+            ".sku-title-header"
+        ]
+        
+        for selector in title_selectors:
+            try:
+                title_elem = item.find_element(By.CSS_SELECTOR, selector)
+                title = title_elem.text.strip()
+                if title and title != "Unknown Product":
+                    break
+            except:
+                continue
+                
+        if debug_index is not None:
+            logger.debug(f"Product {debug_index} title: {title}")
+    except Exception as e:
+        logger.debug(f"Error getting title for product {debug_index}: {e}")
+    
+    # Enhanced price extraction with more selectors
     price_selectors = [
-        ".sr-only:contains('current price')",
+        ".sr-only",  # This often contains price info
         ".priceView-customer-price span",
         ".pricing-price__value",
         "[data-testid='customer-price']",
-        ".visually-hidden:contains('current price')"
+        ".visually-hidden",
+        ".price",
+        ".current-price",
+        ".sale-price",
+        ".regular-price",
+        ".price-current",
+        ".price-with-label",
+        "[aria-label*='current price']",
+        "[aria-label*='price']"
     ]
     
     for selector in price_selectors:
         try:
-            if ":contains(" in selector:
-                # Handle contains selector differently
-                price_elements = item.find_elements(By.CSS_SELECTOR, selector.split(":contains(")[0])
-                for elem in price_elements:
-                    if "current price" in elem.text.lower():
-                        price = extract_price(elem.text)
-                        if price:
+            price_elements = item.find_elements(By.CSS_SELECTOR, selector)
+            for elem in price_elements:
+                elem_text = elem.text.strip()
+                if elem_text:
+                    # Check if this element contains price info
+                    if any(keyword in elem_text.lower() for keyword in ['current price', 'sale price', '$', 'price']):
+                        extracted_price = extract_price(elem_text)
+                        if extracted_price:
+                            price = extracted_price
+                            if debug_index is not None:
+                                logger.debug(f"Product {debug_index} price found with selector '{selector}': ${price}")
                             break
-            else:
-                price_elem = item.find_element(By.CSS_SELECTOR, selector)
-                price = extract_price(price_elem.text)
-            
             if price:
                 break
-        except:
+        except Exception as e:
+            if debug_index is not None:
+                logger.debug(f"Error with selector '{selector}' for product {debug_index}: {e}")
             continue
     
     # Try to find open-box pricing if regular price not found
@@ -169,6 +198,34 @@ def get_product_info(item):
             price_match = re.search(r'from \$?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', open_box_text)
             if price_match:
                 price = float(price_match.group(1).replace(",", ""))
+                if debug_index is not None:
+                    logger.debug(f"Product {debug_index} open-box price found: ${price}")
+        except:
+            pass
+    
+    # If still no price, try to get all text from the element and search for price patterns
+    if not price:
+        try:
+            all_text = item.text
+            price_matches = re.findall(r'\$(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', all_text)
+            if price_matches:
+                # Take the first price that seems reasonable (> $100)
+                for match in price_matches:
+                    potential_price = float(match.replace(",", ""))
+                    if potential_price > 100:  # Reasonable minimum for iMac
+                        price = potential_price
+                        if debug_index is not None:
+                            logger.debug(f"Product {debug_index} price found via text search: ${price}")
+                        break
+        except Exception as e:
+            if debug_index is not None:
+                logger.debug(f"Error in text search for product {debug_index}: {e}")
+    
+    if debug_index is not None and not price:
+        logger.debug(f"No price found for product {debug_index}: {title}")
+        # Log the raw HTML for debugging
+        try:
+            logger.debug(f"Raw HTML for product {debug_index}: {item.get_attribute('outerHTML')[:500]}...")
         except:
             pass
     
@@ -255,25 +312,41 @@ def check_bestbuy():
         
         logger.info(f"Processing {len(items)} products...")
         
+        # Process first 5 products with detailed debugging
+        debug_count = min(5, len(items))
+        logger.info(f"Running detailed debugging on first {debug_count} products...")
+        
+        products_with_prices = 0
+        imac_products = 0
+        
         for i, item in enumerate(items, 1):
             try:
-                title, price = get_product_info(item)
+                # Enable detailed debugging for first 5 products
+                debug_mode = i <= debug_count
+                title, price = get_product_info(item, debug_index=i if debug_mode else None)
                 
-                if price and price < ALERT_THRESHOLD:
+                if price:
+                    products_with_prices += 1
+                    
                     # Check if it's actually an iMac
                     if any(keyword in title.lower() for keyword in ['imac', 'mac']):
-                        matches.append(f"**{title}**\n💵 ${price:.2f}")
-                        logger.info(f"Match found: {title} - ${price:.2f}")
+                        imac_products += 1
+                        if price < ALERT_THRESHOLD:
+                            matches.append(f"**{title}**\n💵 ${price:.2f}")
+                            logger.info(f"Match found: {title} - ${price:.2f}")
+                        else:
+                            logger.info(f"iMac above threshold: {title} - ${price:.2f}")
                     else:
                         logger.debug(f"Product under threshold but not an iMac: {title}")
-                elif price:
-                    logger.debug(f"Product above threshold: {title} - ${price:.2f}")
-                else:
+                elif debug_mode:
                     logger.debug(f"No price found for: {title}")
                     
             except Exception as e:
                 logger.error(f"Error processing item {i}: {e}")
                 continue
+        
+        logger.info(f"Summary: {products_with_prices}/{len(items)} products had prices extracted")
+        logger.info(f"Found {imac_products} iMac products total")
         
         if matches:
             logger.info(f"Found {len(matches)} iMac(s) under ${ALERT_THRESHOLD:.2f}")
