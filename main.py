@@ -20,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 URL = "https://www.bestbuy.com/site/apple-imacs-minis-mac-pros/imac/pcmcat378600050012.c?id=pcmcat378600050012&sp=Price-Low-To-High"
-ALERT_THRESHOLD = 1350.00  # Set to 1100 for testing
+ALERT_THRESHOLD = 450
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
 
 def send_discord_alert(matches):
