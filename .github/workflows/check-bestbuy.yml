@@ -2,8 +2,8 @@ name: Check Best Buy for Open-Box iMacs (Every 30 Min)
 
 on:
   schedule:
-    # Run every 30 minutes from 7:00 AM to 9:30 PM ET (11:00–01:30 UTC next day)
-    - cron: '0,30 11-23,0-1 * * *'
+    # Run every 30 minutes from 7:00 AM to 11:00 PM ET (11:00–03:00 UTC)
+    - cron: '0,30 11-23,0-3 * * *'
   workflow_dispatch:  # Allow manual run
 
 jobs:
